@@ -329,14 +329,31 @@ def parse_send_args(raw: str) -> tuple[Optional[str], Optional[str], Optional[st
     return parts[0], parts[1], parts[2]
 
 
-def main_menu() -> InlineKeyboardMarkup:
+def main_menu(is_logged_in: bool) -> InlineKeyboardMarkup:
+    if is_logged_in:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="📬 Последние 5", callback_data="menu_last5", style="success"),
+                    InlineKeyboardButton(text="✉️ Отправить", callback_data="menu_send", style="primary"),
+                ],
+                [InlineKeyboardButton(text="👤 Кто я", callback_data="menu_whoami")],
+                [InlineKeyboardButton(text="🚪 Выйти", callback_data="menu_logout", style="primary")],
+            ]
+        )
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔐 Войти", callback_data="menu_login"), InlineKeyboardButton(text="🆕 Регистрация", callback_data="menu_register")],
-            [InlineKeyboardButton(text="📬 Последние 5", callback_data="menu_last5"), InlineKeyboardButton(text="✉️ Отправить", callback_data="menu_send")],
-            [InlineKeyboardButton(text="👤 Кто я", callback_data="menu_whoami"), InlineKeyboardButton(text="🚪 Выйти", callback_data="menu_logout")],
+            [
+                InlineKeyboardButton(text="🔐 Войти", callback_data="menu_login", style="primary"),
+                InlineKeyboardButton(text="🆕 Регистрация", callback_data="menu_register", style="success"),
+            ],
         ]
     )
+
+
+def menu_for_user(user_id: int) -> InlineKeyboardMarkup:
+    return main_menu(is_logged_in=get_session(cfg.db_path, user_id) is not None)
 
 
 cfg = load_config()
@@ -359,7 +376,7 @@ async def cmd_start(message: Message):
         "/last [N]\n"
         "/send (мастер отправки)\n"
         "/logout",
-        reply_markup=main_menu(),
+        reply_markup=menu_for_user(message.from_user.id),
     )
 
 
@@ -408,7 +425,7 @@ async def cb_whoami(callback: CallbackQuery):
 async def cb_logout(callback: CallbackQuery):
     delete_session(cfg.db_path, callback.from_user.id)
     pending.pop(callback.from_user.id, None)
-    await callback.message.answer("Выход выполнен")
+    await callback.message.answer("Выход выполнен", reply_markup=menu_for_user(callback.from_user.id))
     await callback.answer()
 
 
@@ -448,7 +465,7 @@ async def cmd_login(message: Message):
     try:
         await loop.run_in_executor(None, check_login, cfg, email, password)
         save_session(cfg.db_path, message.from_user.id, email, password)
-        await message.answer(f"Вход успешен: {email}", reply_markup=main_menu())
+        await message.answer(f"Вход успешен: {email}", reply_markup=menu_for_user(message.from_user.id))
     except Exception as exc:
         await message.answer(f"Ошибка входа: {exc}")
 
@@ -468,7 +485,7 @@ async def cmd_register(message: Message):
 async def cmd_logout(message: Message):
     delete_session(cfg.db_path, message.from_user.id)
     pending.pop(message.from_user.id, None)
-    await message.answer("Выход выполнен", reply_markup=main_menu())
+    await message.answer("Выход выполнен", reply_markup=menu_for_user(message.from_user.id))
 
 
 @dp.message(Command("whoami"))
@@ -548,7 +565,7 @@ async def handle_pending(message: Message):
         try:
             await asyncio.get_running_loop().run_in_executor(None, check_login, cfg, email, password)
             save_session(cfg.db_path, message.from_user.id, email, password)
-            await message.answer(f"Вход успешен: {email}", reply_markup=main_menu())
+            await message.answer(f"Вход успешен: {email}", reply_markup=menu_for_user(message.from_user.id))
         except Exception as exc:
             await message.answer(f"Ошибка входа: {exc}")
         return
@@ -616,7 +633,7 @@ async def handle_pending(message: Message):
                 "Письмо отправлено.\n"
                 f"Кому: {to_addr}\n"
                 f"Тема: {subject}",
-                reply_markup=main_menu(),
+                reply_markup=menu_for_user(message.from_user.id),
             )
         except Exception as exc:
             await message.answer(f"SMTP ошибка: {exc}")
