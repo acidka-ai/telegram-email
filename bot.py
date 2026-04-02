@@ -7,7 +7,7 @@ import sqlite3
 import ssl
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email import message_from_bytes
 from email.header import decode_header
 from email.message import EmailMessage
@@ -55,6 +55,7 @@ class MailItem:
 @dataclass
 class PendingAction:
     action: str
+    data: dict[str, str] = field(default_factory=dict)
 
 
 def _env(name: str, default: Optional[str] = None) -> str:
@@ -331,11 +332,9 @@ def parse_send_args(raw: str) -> tuple[Optional[str], Optional[str], Optional[st
 def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Войти", callback_data="menu_login")],
-            [InlineKeyboardButton(text="Регистрация", callback_data="menu_register")],
-            [InlineKeyboardButton(text="Кто я", callback_data="menu_whoami"), InlineKeyboardButton(text="Выйти", callback_data="menu_logout")],
-            [InlineKeyboardButton(text="Последние 5", callback_data="menu_last5")],
-            [InlineKeyboardButton(text="Отправить письмо", callback_data="menu_send")],
+            [InlineKeyboardButton(text="🔐 Войти", callback_data="menu_login"), InlineKeyboardButton(text="🆕 Регистрация", callback_data="menu_register")],
+            [InlineKeyboardButton(text="📬 Последние 5", callback_data="menu_last5"), InlineKeyboardButton(text="✉️ Отправить", callback_data="menu_send")],
+            [InlineKeyboardButton(text="👤 Кто я", callback_data="menu_whoami"), InlineKeyboardButton(text="🚪 Выйти", callback_data="menu_logout")],
         ]
     )
 
@@ -352,13 +351,13 @@ pending: dict[int, PendingAction] = {}
 async def cmd_start(message: Message):
     await message.answer(
         "Почтовый бот готов.\n"
-        "Работает с доменами в кириллице тоже.\n\n"
+        "Работает с кириллическими доменами.\n\n"
         "Команды:\n"
         "/login email пароль\n"
         "/register email пароль\n"
         "/whoami\n"
         "/last [N]\n"
-        "/send кому@example.com | Тема | Текст\n"
+        "/send (мастер отправки)\n"
         "/logout",
         reply_markup=main_menu(),
     )
@@ -380,8 +379,18 @@ async def cb_register(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "menu_send")
 async def cb_send(callback: CallbackQuery):
-    pending[callback.from_user.id] = PendingAction(action="send")
-    await callback.message.answer("Введи: кому@example.com | Тема | Текст")
+    s = get_session(cfg.db_path, callback.from_user.id)
+    if not s:
+        await callback.message.answer("Сначала войди в почту: /login email пароль")
+        await callback.answer()
+        return
+    pending[callback.from_user.id] = PendingAction(action="send_to")
+    await callback.message.answer(
+        "Шаг 1/3.\n"
+        "Кому отправить письмо?\n"
+        "Пример: `user@example.com`",
+        parse_mode="Markdown",
+    )
     await callback.answer()
 
 
@@ -509,18 +518,13 @@ async def cmd_send(message: Message):
         await message.answer("Ты не вошел. Используй /login")
         return
 
-    to_addr, subject, body = parse_send_args(message.text.replace("/send", "", 1).strip())
-    if not to_addr:
-        await message.answer("Использование: /send кому@example.com | Тема | Текст")
-        return
-
-    to_addr = normalize_email(to_addr)
-    loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, send_email, cfg, s.email, s.password, to_addr, subject, body)
-        await message.answer("Письмо отправлено")
-    except Exception as exc:
-        await message.answer(f"SMTP ошибка: {exc}")
+    pending[message.from_user.id] = PendingAction(action="send_to")
+    await message.answer(
+        "Шаг 1/3.\n"
+        "Кому отправить письмо?\n"
+        "Пример: `user@example.com`",
+        parse_mode="Markdown",
+    )
 
 
 @dp.message()
@@ -573,6 +577,47 @@ async def handle_pending(message: Message):
         try:
             await asyncio.get_running_loop().run_in_executor(None, send_email, cfg, s.email, s.password, to_addr, subject, body)
             await message.answer("Письмо отправлено")
+        except Exception as exc:
+            await message.answer(f"SMTP ошибка: {exc}")
+        return
+
+    if action.action == "send_to":
+        to_addr = normalize_email(text)
+        if "@" not in to_addr:
+            await message.answer("Неверный адрес. Введи email получателя, например user@example.com")
+            return
+        action.action = "send_subject"
+        action.data["to_addr"] = to_addr
+        pending[message.from_user.id] = action
+        await message.answer("Шаг 2/3.\nВведи тему письма:")
+        return
+
+    if action.action == "send_subject":
+        action.action = "send_body"
+        action.data["subject"] = text
+        pending[message.from_user.id] = action
+        await message.answer("Шаг 3/3.\nВведи текст письма:")
+        return
+
+    if action.action == "send_body":
+        pending.pop(message.from_user.id, None)
+        s = get_session(cfg.db_path, message.from_user.id)
+        if not s:
+            await message.answer("Сначала войди")
+            return
+        to_addr = action.data.get("to_addr", "")
+        subject = action.data.get("subject", "(без темы)")
+        body = text
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, send_email, cfg, s.email, s.password, to_addr, subject, body
+            )
+            await message.answer(
+                "Письмо отправлено.\n"
+                f"Кому: {to_addr}\n"
+                f"Тема: {subject}",
+                reply_markup=main_menu(),
+            )
         except Exception as exc:
             await message.answer(f"SMTP ошибка: {exc}")
 
