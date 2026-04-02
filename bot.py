@@ -269,6 +269,53 @@ def send_email(cfg: Config, email: str, password: str, to_addr: str, subject: st
             server.send_message(msg)
 
 
+def parse_mailcow_register_response(body: str, fallback_email: str) -> tuple[bool, str]:
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return True, f"Ящик создан: {fallback_email}"
+
+    if not isinstance(payload, list) or not payload:
+        return True, f"Ящик создан: {fallback_email}"
+
+    messages: list[str] = []
+    success = False
+
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        msg = item.get("msg")
+
+        if isinstance(msg, list) and msg:
+            code = msg[0]
+            value = msg[1] if len(msg) > 1 else None
+
+            if code == "mailbox_added":
+                created_email = value or fallback_email
+                messages.append(f"Ящик создан: {created_email}")
+                success = True
+                continue
+            if code == "password_complexity":
+                messages.append("Пароль слишком простой. Нужен более сложный пароль.")
+                continue
+            if code == "mailbox_quota_left_exceeded":
+                messages.append("На домене закончилась доступная квота для новых ящиков.")
+                continue
+            if code == "rl_saved":
+                continue
+
+        if isinstance(msg, str):
+            messages.append(msg)
+
+    if success and messages:
+        return True, "\n".join(dict.fromkeys(messages))
+    if messages:
+        return False, "\n".join(dict.fromkeys(messages))
+    return True, f"Ящик создан: {fallback_email}"
+
+
 def register_mailbox(cfg: Config, email: str, password: str) -> tuple[bool, str]:
     if not cfg.mailcow_api_url or not cfg.mailcow_api_key:
         return False, "Регистрация выключена: добавь MAILCOW_API_URL и MAILCOW_API_KEY в .env"
@@ -303,10 +350,13 @@ def register_mailbox(cfg: Config, email: str, password: str) -> tuple[bool, str]
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            return True, f"Готово: {body[:400]}"
+            return parse_mailcow_register_response(body, email)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        return False, f"Mailcow API error {exc.code}: {body[:400]}"
+        ok, text = parse_mailcow_register_response(body, email)
+        if ok:
+            return True, text
+        return False, text
     except Exception as exc:
         return False, f"Ошибка регистрации: {exc}"
 
