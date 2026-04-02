@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Mail Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mail_tg_bot
+EnvironmentFile=/opt/mail_tg_bot/.env
+ExecStart=/opt/mail_tg_bot/.venv/bin/python /opt/mail_tg_bot/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
