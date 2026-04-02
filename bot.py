@@ -320,6 +320,7 @@ def parse_mailcow_register_response(body: str, fallback_email: str) -> tuple[boo
 
     messages: list[str] = []
     success = False
+    explicit_error = False
 
     for item in payload:
         if not isinstance(item, dict):
@@ -339,19 +340,33 @@ def parse_mailcow_register_response(body: str, fallback_email: str) -> tuple[boo
                 continue
             if code == "password_complexity":
                 messages.append("Пароль слишком простой. Нужен более сложный пароль.")
+                explicit_error = True
                 continue
             if code == "mailbox_quota_left_exceeded":
                 messages.append("На домене закончилась доступная квота для новых ящиков.")
+                explicit_error = True
+                continue
+            if code in {"mailbox_exists", "mailbox_duplicate", "object_exists"}:
+                messages.append(f"Этот адрес уже занят: {fallback_email}")
+                explicit_error = True
+                continue
+            if code in {"domain_missing", "domain_not_found"}:
+                messages.append("Такого домена нет в Mailcow.")
+                explicit_error = True
                 continue
             if code == "rl_saved":
                 continue
 
         if isinstance(msg, str):
             messages.append(msg)
+            if item_type == "danger":
+                explicit_error = True
 
     if success and messages:
         return True, "\n".join(dict.fromkeys(messages))
-    if messages:
+    if explicit_error and messages:
+        return False, "\n".join(dict.fromkeys(messages))
+    if messages and not success:
         return False, "\n".join(dict.fromkeys(messages))
     return True, f"Ящик создан: {fallback_email}"
 
