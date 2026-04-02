@@ -50,6 +50,7 @@ class MailItem:
     subject: str
     sender: str
     date: str
+    body_preview: str
 
 
 @dataclass
@@ -103,6 +104,43 @@ def decode_mime(value: Optional[str]) -> str:
         else:
             out.append(text)
     return "".join(out)
+
+
+def extract_text_preview(msg) -> str:
+    text_parts: list[str] = []
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            disposition = str(part.get("Content-Disposition") or "").lower()
+            if "attachment" in disposition:
+                continue
+            if content_type != "text/plain":
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                text_parts.append(payload.decode(charset, errors="replace"))
+            except Exception:
+                text_parts.append(payload.decode("utf-8", errors="replace"))
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            try:
+                text_parts.append(payload.decode(charset, errors="replace"))
+            except Exception:
+                text_parts.append(payload.decode("utf-8", errors="replace"))
+
+    text = "\n".join(part.strip() for part in text_parts if part.strip())
+    text = " ".join(text.split())
+    if not text:
+        return "(без текста)"
+    if len(text) > 220:
+        return text[:217] + "..."
+    return text
 
 
 def db_conn(db_path: str):
@@ -196,12 +234,13 @@ def fetch_last_messages(cfg: Config, email: str, password: str, limit: int = 5) 
             msg = message_from_bytes(raw)
             subject = decode_mime(msg.get("Subject"))
             sender = decode_mime(msg.get("From") or "(неизвестно)")
+            body_preview = extract_text_preview(msg)
             dt_raw = msg.get("Date")
             try:
                 dt = parsedate_to_datetime(dt_raw).strftime("%Y-%m-%d %H:%M:%S") if dt_raw else "(без даты)"
             except Exception:
                 dt = dt_raw or "(без даты)"
-            items.append(MailItem(uid, subject, sender, dt))
+            items.append(MailItem(uid, subject, sender, dt, body_preview))
         return items
 
 
@@ -238,12 +277,13 @@ def fetch_new_messages(cfg: Config, session: Session) -> tuple[list[MailItem], i
             msg = message_from_bytes(raw)
             subject = decode_mime(msg.get("Subject"))
             sender = decode_mime(msg.get("From") or "(неизвестно)")
+            body_preview = extract_text_preview(msg)
             dt_raw = msg.get("Date")
             try:
                 dt = parsedate_to_datetime(dt_raw).strftime("%Y-%m-%d %H:%M:%S") if dt_raw else "(без даты)"
             except Exception:
                 dt = dt_raw or "(без даты)"
-            items.append(MailItem(uid, subject, sender, dt))
+            items.append(MailItem(uid, subject, sender, dt, body_preview))
         return items, current_max
 
 
@@ -498,7 +538,10 @@ async def cb_last5(callback: CallbackQuery):
     if not items:
         await callback.message.answer("Входящие пусты")
     else:
-        lines = [f"UID {i.uid}\nОт: {i.sender}\nТема: {i.subject}\nДата: {i.date}" for i in items]
+        lines = [
+            f"UID {i.uid}\nОт: {i.sender}\nТема: {i.subject}\nДата: {i.date}\nТекст: {i.body_preview}"
+            for i in items
+        ]
         await callback.message.answer("\n\n".join(lines)[:3800])
     await callback.answer()
 
@@ -574,7 +617,10 @@ async def cmd_last(message: Message):
         await message.answer("Входящие пусты")
         return
 
-    lines = [f"UID {i.uid}\nОт: {i.sender}\nТема: {i.subject}\nДата: {i.date}" for i in items]
+    lines = [
+        f"UID {i.uid}\nОт: {i.sender}\nТема: {i.subject}\nДата: {i.date}\nТекст: {i.body_preview}"
+        for i in items
+    ]
     await message.answer("\n\n".join(lines)[:3800])
 
 
@@ -705,7 +751,8 @@ async def poll_new_messages():
                         f"Ящик: {s.email}\n"
                         f"От: {it.sender}\n"
                         f"Тема: {it.subject}\n"
-                        f"Дата: {it.date}",
+                        f"Дата: {it.date}\n"
+                        f"Текст: {it.body_preview}",
                     )
             except Exception:
                 pass
